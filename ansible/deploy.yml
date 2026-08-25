@@ -56,10 +56,20 @@
           - "{{ host_config_path }}:/work/registry/config"
 
     - name: Wait for the service to respond
-      ansible.builtin.uri:
-        url: "http://localhost:{{ health_port }}{{ health_path }}"
-        status_code: 200
-      register: health_result
-      until: health_result.status == 200
+      # NOTE: we deliberately do NOT use the `uri` module here. Ansible's
+      # control node for this playbook is the Jenkins container itself, and
+      # an HTTP request from `uri` runs in that container's own network
+      # namespace — it can't see ports published on the actual Docker host
+      # unless Jenkins runs with --network host. `docker exec` sidesteps
+      # this entirely: like docker pull/push/run, it's delegated through
+      # the Docker socket straight into the target container, so it works
+      # regardless of Jenkins' own network setup.
+      ansible.builtin.command:
+        cmd: >
+          docker exec {{ container_name }} bash -c
+          "timeout 2 bash -c 'cat < /dev/null > /dev/tcp/127.0.0.1/{{ deploy_port_map.split(':')[1] }}' && echo PORT_OPEN"
+      register: port_check
+      until: "'PORT_OPEN' in port_check.stdout"
       retries: 10
       delay: 3
+      changed_when: false
