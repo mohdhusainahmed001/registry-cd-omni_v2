@@ -1,0 +1,99 @@
+pipeline {
+
+  agent { label 'erlang-agent' }
+
+  parameters {
+    choice(name: 'TARGET_ENV', choices: ['dev', 'qa', 'uat', 'prod'], description: 'Environment to deploy to')
+    string(name: 'IMAGE_TAG', defaultValue: '', description: 'Exact tag to deploy, e.g. manual-1 or omni_v2-13 (must already exist in Nexus under onex-docker/erlang-registry/<env>)')
+    string(name: 'CONTAINER_PORT', defaultValue: '8080', description: 'Port the erlang app listens on INSIDE the container (check sys.config/vm.args for the real value)')
+    string(name: 'HEALTH_PATH', defaultValue: '/', description: 'HTTP path used for the post-deploy health check')
+  }
+
+  environment {
+    REGISTRY_URL = 'localhost:8082'
+  }
+
+  stages {
+
+    stage('Validate Inputs') {
+      steps {
+        script {
+          if (!params.IMAGE_TAG?.trim()) {
+            error("IMAGE_TAG is required — must match a tag already pushed to Nexus under onex-docker/erlang-registry/${params.TARGET_ENV}")
+          }
+          env.REPO_PATH = "onex-docker/erlang-registry/${params.TARGET_ENV}"
+          env.TAG_NAME = params.IMAGE_TAG
+          echo """
+          ---- Deploy Config ----
+          Environment  : ${params.TARGET_ENV}
+          Registry URL : ${env.REGISTRY_URL}
+          Repo Path    : ${env.REPO_PATH}
+          Tag          : ${env.TAG_NAME}
+          ------------------------
+          """
+        }
+      }
+    }
+
+    stage('Approval Gate') {
+      when {
+        expression { return params.TARGET_ENV == 'prod' }
+      }
+      steps {
+        script {
+          input message: "Deploy tag '${env.TAG_NAME}' to PROD?", ok: "Deploy"
+        }
+      }
+    }
+
+    stage('Ansible Prereqs') {
+      steps {
+        sh """
+          ansible-galaxy collection install -r ansible/requirements.yml
+        """
+      }
+    }
+
+    stage('Determine Deploy Port') {
+      steps {
+        script {
+          // Each environment gets its own host port since all 4 can run
+          // side-by-side on the same localhost Docker daemon. Adjust these
+          // if they collide with anything else already running on the host
+          // (Jenkins itself is on 8080, Nexus on 8081-8082, SonarQube on
+          // 9000, Grafana on 3000, Prometheus on 9090, etc).
+          def portMap = [
+            dev : '8091',
+            qa  : '8092',
+            uat : '8093',
+            prod: '8094'
+          ]
+          def hostPort = portMap.get(params.TARGET_ENV, '8090')
+          env.HOST_PORT = hostPort
+          env.DEPLOY_PORT_MAP = "${hostPort}:${params.CONTAINER_PORT}"
+          echo "Environment '${params.TARGET_ENV}' -> host port ${hostPort} (container port ${params.CONTAINER_PORT})"
+        }
+      }
+    }
+
+    stage('Deploy via Ansible') {
+      steps {
+        withCredentials([usernamePassword(credentialsId: 'nexus-creds', usernameVariable: 'NEXUS_USER', passwordVariable: 'NEXUS_PASS')]) {
+          sh """
+            ansible-playbook -i ansible/inventory/hosts.ini ansible/deploy.yml \
+              --extra-vars "registry_url=${env.REGISTRY_URL} repo_path=${env.REPO_PATH} deploy_env=${params.TARGET_ENV} tag_name=${env.TAG_NAME} deploy_port_map=${env.DEPLOY_PORT_MAP} health_port=${env.HOST_PORT} health_path=${params.HEALTH_PATH}"
+          """
+        }
+      }
+    }
+  }
+
+  post {
+    success {
+      echo "Successfully deployed ${env.TAG_NAME} to ${params.TARGET_ENV} on host port ${env.HOST_PORT}"
+    }
+    failure {
+      echo "Deploy failed for ${env.TAG_NAME} -> ${params.TARGET_ENV}"
+    }
+  }
+}

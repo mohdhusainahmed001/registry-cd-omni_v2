@@ -1,0 +1,65 @@
+---
+- name: Deploy registry-omni service to localhost
+  hosts: localhost
+  connection: local
+  become: false
+  gather_facts: false
+
+  vars:
+    # registry_url and repo_path are passed in from Jenkins (--extra-vars),
+    # sourced from env.REGISTRY_URL / env.REPO_PATH computed in the
+    # "Tag & Push Image to Nexus" stage — kept as the single source of truth
+    # instead of being redefined here.
+    image: "{{ registry_url }}/{{ repo_path }}:{{ tag_name }}"
+    container_name: "registry-omni-{{ deploy_env }}"
+    host_config_path: "/opt/registry-omni/config/{{ deploy_env }}"
+    # deploy_port_map is passed in as "host:container", e.g. "8080:8080"
+    # nexus_user / nexus_pass are read from the environment, not from
+    # --extra-vars, so they never show up in `ps aux` on the host.
+    nexus_user: "{{ lookup('env', 'NEXUS_USER') }}"
+    nexus_pass: "{{ lookup('env', 'NEXUS_PASS') }}"
+
+  tasks:
+    - name: Ensure persistent config directory exists on host
+      ansible.builtin.file:
+        path: "{{ host_config_path }}"
+        state: directory
+        mode: "0755"
+
+    - name: Log in to Nexus Docker registry
+      community.docker.docker_login:
+        registry_url: "{{ registry_url }}"
+        username: "{{ nexus_user }}"
+        password: "{{ nexus_pass }}"
+
+    - name: Pull the image built by CI
+      community.docker.docker_image:
+        name: "{{ image }}"
+        source: pull
+        force_source: true
+
+    - name: Remove any existing container for this environment
+      community.docker.docker_container:
+        name: "{{ container_name }}"
+        state: absent
+        force_kill: true
+
+    - name: Run the new container
+      community.docker.docker_container:
+        name: "{{ container_name }}"
+        image: "{{ image }}"
+        state: started
+        restart_policy: unless-stopped
+        published_ports:
+          - "{{ deploy_port_map }}"
+        volumes:
+          - "{{ host_config_path }}:/work/registry/config"
+
+    - name: Wait for the service to respond
+      ansible.builtin.uri:
+        url: "http://localhost:{{ health_port }}{{ health_path }}"
+        status_code: 200
+      register: health_result
+      until: health_result.status == 200
+      retries: 10
+      delay: 3
