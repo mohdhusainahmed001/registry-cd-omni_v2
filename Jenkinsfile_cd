@@ -5,8 +5,8 @@ pipeline {
   parameters {
     choice(name: 'TARGET_ENV', choices: ['dev', 'qa', 'uat', 'prod'], description: 'Environment to deploy to')
     string(name: 'IMAGE_TAG', defaultValue: '', description: 'Exact tag to deploy, e.g. manual-1 or omni_v2-13 (must already exist in Nexus under onex-docker/erlang-registry/<env>)')
-    string(name: 'CONTAINER_PORT', defaultValue: '8080', description: 'Port the erlang app listens on INSIDE the container (check sys.config/vm.args for the real value)')
-    string(name: 'HEALTH_PATH', defaultValue: '/', description: 'HTTP path used for the post-deploy health check')
+    string(name: 'CONTAINER_PORT', defaultValue: '16000', description: 'Port the erlang app listens on INSIDE the container (confirmed via ranch_listener_sup socket_opts in container logs)')
+    string(name: 'HEALTH_PATH', defaultValue: '/metrics', description: 'HTTP path used for the post-deploy health check (prometheus_handler route; root / has no handler)')
   }
 
   environment {
@@ -78,7 +78,7 @@ pipeline {
 
     stage('Deploy via Ansible') {
       steps {
-        withCredentials([usernamePassword(credentialsId: 'nexus-creds', usernameVariable: 'NEXUS_USER', passwordVariable: 'NEXUS_PASS')]) {
+        withCredentials([usernamePassword(credentialsId: 'nexus-cred', usernameVariable: 'NEXUS_USER', passwordVariable: 'NEXUS_PASS')]) {
           sh """
             ansible-playbook -i ansible/inventory/hosts.ini ansible/deploy.yml \
               --extra-vars "registry_url=${env.REGISTRY_URL} repo_path=${env.REPO_PATH} deploy_env=${params.TARGET_ENV} tag_name=${env.TAG_NAME} deploy_port_map=${env.DEPLOY_PORT_MAP} health_port=${env.HOST_PORT} health_path=${params.HEALTH_PATH}"
