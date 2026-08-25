@@ -78,7 +78,7 @@ pipeline {
 
     stage('Deploy via Ansible') {
       steps {
-        withCredentials([usernamePassword(credentialsId: 'nexus-cred', usernameVariable: 'NEXUS_USER', passwordVariable: 'NEXUS_PASS')]) {
+        withCredentials([usernamePassword(credentialsId: 'nexus-creds', usernameVariable: 'NEXUS_USER', passwordVariable: 'NEXUS_PASS')]) {
           sh """
             ansible-playbook -i ansible/inventory/hosts.ini ansible/deploy.yml \
               --extra-vars "registry_url=${env.REGISTRY_URL} repo_path=${env.REPO_PATH} deploy_env=${params.TARGET_ENV} tag_name=${env.TAG_NAME} deploy_port_map=${env.DEPLOY_PORT_MAP} health_port=${env.HOST_PORT} health_path=${params.HEALTH_PATH}"
